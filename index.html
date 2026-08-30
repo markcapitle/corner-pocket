@@ -267,8 +267,6 @@ function rack(){
   spin={x:0,y:0}; power01=0.55; aimAngle=0; pendingChoice=null;
   gameState='place'; clearedBefore=false;
   online=false; myId=1; lastWinner=0;
-  try{ if(typeof location!=='undefined'&&location.hash&&typeof history!=='undefined')
-        history.replaceState(null,'',location.pathname+location.search); }catch(e){}
   setStatus("<b>Player 1 breaks.</b> Drag the cue ball anywhere behind the head string, then confirm.");
   refreshAll();
 }
@@ -928,6 +926,7 @@ window.addEventListener('keydown',e=>{
 });
 document.getElementById('rackBtn').addEventListener('click',()=>{
   if(live.on && live.role==='guest'){ netSend({t:'rack'}); return; }   // only host controls the rack
+  clearHash();                                                        // starting fresh — drop any stale link state
   rack();
   if(live.on && live.role==='host'){ player=1; hostBroadcast(); }
 });
@@ -1269,6 +1268,8 @@ function applyState(arr){
   gameState = w ? 'over' : (isPlace?'place':'aim');
 }
 function encodeGame(){return b64url(JSON.stringify(serialize()));}
+function clearHash(){ try{ if(typeof history!=='undefined'&&history.replaceState)
+  history.replaceState(null,'',(typeof location!=='undefined'?location.pathname+location.search:'')); }catch(e){} }
 function syncHash(){
   if(!online)return;
   try{
@@ -1467,7 +1468,13 @@ function iceComplete(pc){
 function bytesToB64url(bytes){ let s=''; for(let i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000)); return b64url(s); }
 function b64urlToBytes(code){ const bin=unb64url(code); const a=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i); return a; }
 async function deflateStr(str){ const cs=new CompressionStream('deflate-raw'); const w=cs.writable.getWriter(); w.write(new TextEncoder().encode(str)); w.close(); return new Uint8Array(await new Response(cs.readable).arrayBuffer()); }
-async function inflateBytes(bytes){ const ds=new DecompressionStream('deflate-raw'); const w=ds.writable.getWriter(); w.write(bytes); w.close(); return new TextDecoder().decode(await new Response(ds.readable).arrayBuffer()); }
+async function inflateBytes(bytes){
+  try{
+    const ds=new DecompressionStream('deflate-raw'); const w=ds.writable.getWriter();
+    w.write(bytes); w.close().catch(()=>{});
+    return new TextDecoder().decode(await new Response(ds.readable).arrayBuffer());
+  }catch(e){ throw new Error('bad-invite-code'); }
+}
 async function packSDP(desc){
   const json=JSON.stringify({t:desc.type,s:desc.sdp});
   if(typeof CompressionStream!=='undefined'){
