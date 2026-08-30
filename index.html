@@ -66,6 +66,9 @@
   .netlog{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;line-height:1.4;color:#9fb59a;
     background:#0c1410;border:1px solid #29332360;border-radius:8px;padding:8px;margin-top:6px;
     max-height:150px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+  .netinput{width:100%;box-sizing:border-box;font-family:ui-monospace,Menlo,monospace;font-size:12px;
+    color:#e7dfd0;background:#0e0b12;border:1px solid #3a3340;border-radius:8px;padding:8px 9px;margin-top:6px}
+  .netinput:focus{outline:none;border-color:var(--brass)}
 
   .score{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;
     background:linear-gradient(180deg,#171319,#100d12);border:1px solid var(--line);
@@ -946,6 +949,7 @@ function panelShell(title){
 }
 function openLivePanel(){
   const b=panelShell('Play a friend');
+  const t=(live.turn&&live.turn[0])||{};
   b.innerHTML=
     '<p class="netp">Play on two devices. <b>Live</b> connects you directly for real-time play; '+
     '<b>turn-by-turn link</b> always works — you send a link after each shot.</p>'+
@@ -954,12 +958,35 @@ function openLivePanel(){
       '<button class="btn" id="goJoin">🔗 Join with an invite code</button>'+
       '<button class="btn" id="goLink">✉️ Turn-by-turn link (always works)</button>'+
     '</div>'+
-    '<p class="netnote">Live play connects your two networks directly (peer-to-peer, no server). '+
-    'Most home and phone connections work; some strict networks don\'t — use the link mode if it won\'t connect.</p>';
+    '<details class="netdiag" id="turnBox"'+(live.turn&&live.turn.length?' open':'')+'>'+
+      '<summary>⚙️ TURN relay '+(live.turn&&live.turn.length?'✓ saved':'(needed for most live connections)')+'</summary>'+
+      '<p class="netnote" style="margin-top:8px">Direct peer-to-peer fails on most home/phone networks. Get <b>free</b> TURN credentials in ~2 min at '+
+        '<b>metered.ca</b>, <b>expressturn.com</b>, or Cloudflare, then paste them here (saved in this browser):</p>'+
+      '<input class="netinput" id="turnUrl" placeholder="turn:host:3478  (or turns:host:443?transport=tcp)" value="'+esc(t.urls||'')+'">'+
+      '<input class="netinput" id="turnUser" placeholder="username" value="'+esc(t.username||'')+'">'+
+      '<input class="netinput" id="turnCred" placeholder="credential / password" value="'+esc(t.credential||'')+'">'+
+      '<div class="netbtns" style="margin-top:8px">'+
+        '<button class="btn primary" id="turnSave">Save relay</button>'+
+        '<button class="btn" id="turnClear">Clear</button>'+
+      '</div>'+
+      '<div class="netstat" id="turnStat"></div>'+
+    '</details>'+
+    '<p class="netnote">Tip: both players get the best results if the host has a TURN relay saved. If live still won\'t connect, use turn-by-turn link.</p>';
   b.querySelector('#goHost').addEventListener('click',panelHost);
   b.querySelector('#goJoin').addEventListener('click',()=>panelJoin(''));
   b.querySelector('#goLink').addEventListener('click',()=>{ closeLivePanel(); startOnline();
     setStatus("<b>Turn-by-turn match started — you're Player "+myId+".</b> Take your turn, then a <b>Copy link</b> button appears to send the board to your opponent."); });
+  b.querySelector('#turnSave').addEventListener('click',()=>{
+    const url=b.querySelector('#turnUrl').value.trim();
+    const username=b.querySelector('#turnUser').value.trim();
+    const credential=b.querySelector('#turnCred').value.trim();
+    if(!url){ b.querySelector('#turnStat').textContent='Enter at least the TURN url.'; return; }
+    saveTurn(url?[{urls:url,username,credential}]:[]);
+    b.querySelector('#turnStat').textContent='Saved ✓ — now Host or Join and it will use the relay.';
+  });
+  b.querySelector('#turnClear').addEventListener('click',()=>{ saveTurn([]);
+    b.querySelector('#turnUrl').value='';b.querySelector('#turnUser').value='';b.querySelector('#turnCred').value='';
+    b.querySelector('#turnStat').textContent='Cleared.'; });
 }
 async function panelHost(){
   const b=panelShell('Host a live game');
@@ -1307,6 +1334,8 @@ function netlog(m){
   try{console.log('[net] '+m);}catch(e){}
 }
 function bindNetLog(){ netLogEl=document.getElementById('netLog'); if(netLogEl)netLogEl.textContent=netLogBuf.join('\n'); }
+function loadTurn(){ try{ live.turn=JSON.parse(localStorage.getItem('cp_turn')||'[]'); }catch(e){ live.turn=[]; } }
+function saveTurn(arr){ live.turn=arr||[]; try{ localStorage.setItem('cp_turn',JSON.stringify(live.turn)); }catch(e){} }
 function sdpCandSummary(sdp){
   const c={host:0,srflx:0,relay:0,prflx:0};
   (sdp.match(/a=candidate:[^\r\n]+/g)||[]).forEach(l=>{ const m=l.match(/typ (\w+)/); if(m&&c[m[1]]!=null)c[m[1]]++; });
@@ -1411,11 +1440,12 @@ const TURN=[
   // {urls:'turns:YOUR_HOST:443?transport=tcp', username:'USER', credential:'PASS'},
 ];
 function newPC(){
+  const relays=[...(live.turn||[]), ...TURN];
   const pc=new RTCPeerConnection({iceServers:[
     {urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']},
-    ...TURN
+    ...relays
   ]});
-  netlog('TURN configured: '+(TURN.length?'yes':'NO (STUN only)'));
+  netlog('TURN configured: '+(relays.length?'yes ('+relays.length+')':'NO (STUN only)'));
   pc.addEventListener('icegatheringstatechange',()=>netlog('gathering: '+pc.iceGatheringState));
   pc.addEventListener('iceconnectionstatechange',()=>{
     netlog('ice: '+pc.iceConnectionState);
@@ -1514,6 +1544,7 @@ globalThis.__T = {
 };
 rack();
 sizeCanvas();
+loadTurn();
 (function detectInvite(){
   try{
     const h=((typeof location!=='undefined'&&location.hash)||'')+' '+((typeof location!=='undefined'&&location.search)||'');
