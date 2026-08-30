@@ -61,6 +61,11 @@
     line-height:1.35;color:#d7e6c9;background:#0c1410;border:1px solid #35402f;border-radius:9px;
     padding:9px;resize:vertical;margin-bottom:9px;word-break:break-all}
   .netstat{font-size:12px;color:#9a94a4;margin-top:9px;min-height:16px}
+  .netdiag{margin-top:10px}
+  .netdiag summary{font-size:11.5px;color:#807a88;cursor:pointer}
+  .netlog{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;line-height:1.4;color:#9fb59a;
+    background:#0c1410;border:1px solid #29332360;border-radius:8px;padding:8px;margin-top:6px;
+    max-height:150px;overflow:auto;white-space:pre-wrap;word-break:break-word}
 
   .score{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;
     background:linear-gradient(180deg,#171319,#100d12);border:1px solid var(--line);
@@ -974,7 +979,9 @@ async function panelHost(){
       '<p class="netp2"><b>Step 2.</b> Paste the reply code they send back:</p>'+
       '<textarea class="netcode" id="ansIn" rows="3" placeholder="Paste your friend\'s reply code here"></textarea>'+
       '<button class="btn primary" id="doAccept">Connect ✓</button>'+
-      '<div class="netstat" id="netStat">Waiting for a reply code…</div>';
+      '<div class="netstat" id="netStat">Waiting for a reply code…</div>'+
+      '<details class="netdiag"><summary>Connection details</summary><pre class="netlog" id="netLog"></pre></details>';
+    bindNetLog();
     b.querySelector('#copyOffer').addEventListener('click',()=>copyText(offer,b.querySelector('#offerOut')));
     b.querySelector('#copyLink').addEventListener('click',()=>copyText(link,b.querySelector('#offerOut')));
     b.querySelector('#doAccept').addEventListener('click',async()=>{
@@ -1002,8 +1009,10 @@ async function panelJoin(prefill){
         '<p class="netp2"><b>Step 2.</b> Send this reply code back to your friend, then wait to connect:</p>'+
         '<textarea class="netcode" id="ansOut" readonly rows="3">'+esc(answer)+'</textarea>'+
         '<button class="btn primary" id="copyAns">📋 Copy reply code</button>'+
-        '<div class="netstat" id="joinStat">Once they paste it and hit Connect, the game starts here automatically.</div>';
+        '<div class="netstat" id="joinStat">Once they paste it and hit Connect, the game starts here automatically.</div>'+
+        '<details class="netdiag"><summary>Connection details</summary><pre class="netlog" id="netLog"></pre></details>';
       s2.querySelector('#copyAns').addEventListener('click',()=>copyText(answer,s2.querySelector('#ansOut')));
+      bindNetLog();
       armLiveWatch('joinStat');
     }catch(e){ s2.innerHTML='<p class="netp">That invite didn\'t parse — make sure you pasted the whole thing.</p>'; }
   });
@@ -1291,6 +1300,18 @@ function loop(){
 
 /* ============ live P2P (real-time over WebRTC) ============ */
 let liveWatch=null;
+let netLogEl=null, netLogBuf=[];
+function netlog(m){
+  netLogBuf.push(m); if(netLogBuf.length>60)netLogBuf.shift();
+  if(netLogEl)netLogEl.textContent=netLogBuf.join('\n');
+  try{console.log('[net] '+m);}catch(e){}
+}
+function bindNetLog(){ netLogEl=document.getElementById('netLog'); if(netLogEl)netLogEl.textContent=netLogBuf.join('\n'); }
+function sdpCandSummary(sdp){
+  const c={host:0,srflx:0,relay:0,prflx:0};
+  (sdp.match(/a=candidate:[^\r\n]+/g)||[]).forEach(l=>{ const m=l.match(/typ (\w+)/); if(m&&c[m[1]]!=null)c[m[1]]++; });
+  return 'candidates host='+c.host+' srflx='+c.srflx+' relay='+c.relay;
+}
 function armLiveWatch(elId){
   clearTimeout(liveWatch);
   liveWatch=setTimeout(()=>{ if(!live.connected) liveFallbackMsg(elId); }, 20000);
@@ -1376,19 +1397,33 @@ function liveDisconnect(msg){
 }
 function wireChannel(ch,role){
   live.conn=ch;
-  ch.onopen=()=>liveOnConnect(role);
-  ch.onclose=()=>liveDisconnect("Your opponent disconnected");
+  ch.onopen=()=>{ netlog('datachannel OPEN ('+role+') ✓'); liveOnConnect(role); };
+  ch.onclose=()=>{ netlog('datachannel closed'); liveDisconnect("Your opponent disconnected"); };
   ch.onmessage=ev=>{ try{ handleNetMsg(JSON.parse(ev.data)); }catch(e){} };
 }
-/* --- WebRTC manual-signaling (no server; public STUN only) --- */
+/* --- WebRTC manual-signaling (no server; STUN + optional TURN) --- */
+// Live play across strict networks (most home routers / cellular) needs a TURN relay.
+// There is no reliable hardcodable free TURN anymore, but you can get free creds in ~2 min:
+//   • https://www.metered.ca (dashboard → TURN)  • https://www.expressturn.com  • Cloudflare Realtime TURN
+// Paste them here and redeploy — this is the fix if diagnostics show ICE 'failed' / relay=0.
+const TURN=[
+  // {urls:'turn:YOUR_HOST:3478', username:'USER', credential:'PASS'},
+  // {urls:'turns:YOUR_HOST:443?transport=tcp', username:'USER', credential:'PASS'},
+];
 function newPC(){
   const pc=new RTCPeerConnection({iceServers:[
-    {urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']}
+    {urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']},
+    ...TURN
   ]});
+  netlog('TURN configured: '+(TURN.length?'yes':'NO (STUN only)'));
+  pc.addEventListener('icegatheringstatechange',()=>netlog('gathering: '+pc.iceGatheringState));
   pc.addEventListener('iceconnectionstatechange',()=>{
+    netlog('ice: '+pc.iceConnectionState);
     if((pc.iceConnectionState==='failed'||pc.iceConnectionState==='closed') && !live.connected)
       liveFallbackMsg(document.getElementById('netStat')?'netStat':'joinStat');
   });
+  pc.addEventListener('connectionstatechange',()=>netlog('conn: '+pc.connectionState));
+  pc.addEventListener('icecandidateerror',e=>{ if(e.errorCode&&e.errorCode!==701)netlog('cand-error '+e.errorCode+' '+(e.url||'')); });
   live.pc=pc; return pc;
 }
 function iceComplete(pc){
@@ -1396,7 +1431,7 @@ function iceComplete(pc){
     if(pc.iceGatheringState==='complete')return res();
     const chk=()=>{ if(pc.iceGatheringState==='complete'){ pc.removeEventListener('icegatheringstatechange',chk); res(); } };
     pc.addEventListener('icegatheringstatechange',chk);
-    setTimeout(res,2500); // fall back if gathering stalls
+    setTimeout(res,5000); // fall back if gathering stalls (TURN relay candidates can be slow)
   });
 }
 function bytesToB64url(bytes){ let s=''; for(let i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000)); return b64url(s); }
@@ -1423,21 +1458,29 @@ async function liveHostCreate(){
   const pc=newPC();
   const ch=pc.createDataChannel('pool',{ordered:true});
   wireChannel(ch,'host');
+  netlog('host: creating offer…');
   const offer=await pc.createOffer();
   await pc.setLocalDescription(offer);
   await iceComplete(pc);
+  netlog('host offer ready — '+sdpCandSummary(pc.localDescription.sdp));
   return await packSDP(pc.localDescription);
 }
 async function liveGuestAnswer(offerCode){
   const pc=newPC();
-  pc.ondatachannel=ev=>wireChannel(ev.channel,'guest');
+  pc.ondatachannel=ev=>{ netlog('guest: datachannel received'); wireChannel(ev.channel,'guest'); };
+  netlog('guest: applying offer…');
   await pc.setRemoteDescription(await unpackSDP(offerCode));
   const ans=await pc.createAnswer();
   await pc.setLocalDescription(ans);
   await iceComplete(pc);
+  netlog('guest answer ready — '+sdpCandSummary(pc.localDescription.sdp));
   return await packSDP(pc.localDescription);
 }
-async function liveHostAccept(answerCode){ await live.pc.setRemoteDescription(await unpackSDP(answerCode)); }
+async function liveHostAccept(answerCode){
+  netlog('host: applying reply code…');
+  await live.pc.setRemoteDescription(await unpackSDP(answerCode));
+  netlog('host: reply applied — negotiating…');
+}
 
 /* ============ boot ============ */
 globalThis.__T = {
