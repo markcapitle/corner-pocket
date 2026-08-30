@@ -1377,8 +1377,26 @@ function iceComplete(pc){
     setTimeout(res,2500); // fall back if gathering stalls
   });
 }
-function packSDP(desc){ return b64url(JSON.stringify({t:desc.type,s:desc.sdp})); }
-function unpackSDP(code){ const o=JSON.parse(unb64url(code.trim())); return {type:o.t, sdp:o.s}; }
+function bytesToB64url(bytes){ let s=''; for(let i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000)); return b64url(s); }
+function b64urlToBytes(code){ const bin=unb64url(code); const a=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i); return a; }
+async function deflateStr(str){ const cs=new CompressionStream('deflate-raw'); const w=cs.writable.getWriter(); w.write(new TextEncoder().encode(str)); w.close(); return new Uint8Array(await new Response(cs.readable).arrayBuffer()); }
+async function inflateBytes(bytes){ const ds=new DecompressionStream('deflate-raw'); const w=ds.writable.getWriter(); w.write(bytes); w.close(); return new TextDecoder().decode(await new Response(ds.readable).arrayBuffer()); }
+async function packSDP(desc){
+  const json=JSON.stringify({t:desc.type,s:desc.sdp});
+  if(typeof CompressionStream!=='undefined'){
+    try{ return 'z'+bytesToB64url(await deflateStr(json)); }catch(e){}
+  }
+  return 'r'+b64url(json);                         // fallback: uncompressed
+}
+async function unpackSDP(code){
+  code=code.trim();
+  const tag=code[0], body=code.slice(1);
+  let json;
+  if(tag==='z') json=await inflateBytes(b64urlToBytes(body));
+  else if(tag==='r') json=unb64url(body);
+  else json=unb64url(code);                        // legacy (unprefixed) codes
+  const o=JSON.parse(json); return {type:o.t, sdp:o.s};
+}
 async function liveHostCreate(){
   const pc=newPC();
   const ch=pc.createDataChannel('pool',{ordered:true});
@@ -1386,18 +1404,18 @@ async function liveHostCreate(){
   const offer=await pc.createOffer();
   await pc.setLocalDescription(offer);
   await iceComplete(pc);
-  return packSDP(pc.localDescription);
+  return await packSDP(pc.localDescription);
 }
 async function liveGuestAnswer(offerCode){
   const pc=newPC();
   pc.ondatachannel=ev=>wireChannel(ev.channel,'guest');
-  await pc.setRemoteDescription(unpackSDP(offerCode));
+  await pc.setRemoteDescription(await unpackSDP(offerCode));
   const ans=await pc.createAnswer();
   await pc.setLocalDescription(ans);
   await iceComplete(pc);
-  return packSDP(pc.localDescription);
+  return await packSDP(pc.localDescription);
 }
-async function liveHostAccept(answerCode){ await live.pc.setRemoteDescription(unpackSDP(answerCode)); }
+async function liveHostAccept(answerCode){ await live.pc.setRemoteDescription(await unpackSDP(answerCode)); }
 
 /* ============ boot ============ */
 globalThis.__T = {
@@ -1418,7 +1436,7 @@ globalThis.__T = {
   consts:{POCKET_R,CAPTURE,MOUTH,JAW},
   injectShot(o){ S=Object.assign(freshShot(),o,{railBalls:new Set(o.railBalls||[])}); },
   getShot(){return S;},
-  serialize, applyState, encodeGame,
+  serialize, applyState, encodeGame, packSDP, unpackSDP,
   get online(){return online}, set online(v){online=v},
   get myId(){return myId}, set myId(v){myId=v}, get lastWinner(){return lastWinner},
   __live:{
