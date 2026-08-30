@@ -962,19 +962,25 @@ async function panelHost(){
   try{
     const offer=await liveHostCreate();
     const link=inviteLink(offer);
+    const base=(typeof location!=='undefined'&&location.href?location.href.split('#')[0].split('?')[0]:'the game site');
     b.innerHTML=
-      '<p class="netp"><b>Step 1.</b> Send this invite link (or code) to your friend:</p>'+
-      '<textarea class="netcode" id="offerOut" readonly rows="3">'+esc(link)+'</textarea>'+
-      '<button class="btn primary" id="copyOffer">📋 Copy invite link</button>'+
+      '<p class="netp"><b>Step 1.</b> Send this invite <b>code</b> to your friend — copying the code is the reliable way (links can get mangled by chat apps):</p>'+
+      '<textarea class="netcode" id="offerOut" readonly rows="3">'+esc(offer)+'</textarea>'+
+      '<div class="netbtns">'+
+        '<button class="btn primary" id="copyOffer">📋 Copy invite code</button>'+
+        '<button class="btn" id="copyLink">🔗 Copy link instead</button>'+
+      '</div>'+
+      '<p class="netnote">They open <b>'+esc(base)+'</b> → <b>Play a friend → Join with an invite code</b> and paste it. (If the link opens the Join screen for them directly, even easier.)</p>'+
       '<p class="netp2"><b>Step 2.</b> Paste the reply code they send back:</p>'+
       '<textarea class="netcode" id="ansIn" rows="3" placeholder="Paste your friend\'s reply code here"></textarea>'+
       '<button class="btn primary" id="doAccept">Connect ✓</button>'+
       '<div class="netstat" id="netStat">Waiting for a reply code…</div>';
-    b.querySelector('#copyOffer').addEventListener('click',()=>copyText(link,b.querySelector('#offerOut')));
+    b.querySelector('#copyOffer').addEventListener('click',()=>copyText(offer,b.querySelector('#offerOut')));
+    b.querySelector('#copyLink').addEventListener('click',()=>copyText(link,b.querySelector('#offerOut')));
     b.querySelector('#doAccept').addEventListener('click',async()=>{
       const code=b.querySelector('#ansIn').value.trim(); if(!code)return;
       b.querySelector('#netStat').textContent='Connecting…';
-      try{ await liveHostAccept(code); }
+      try{ await liveHostAccept(code); armLiveWatch('netStat'); }
       catch(e){ b.querySelector('#netStat').textContent='That code didn\'t parse — check you copied all of it.'; }
     });
   }catch(e){ b.innerHTML='<p class="netp">Couldn\'t start a live session in this browser. Try the turn-by-turn link instead.</p>'; }
@@ -996,8 +1002,9 @@ async function panelJoin(prefill){
         '<p class="netp2"><b>Step 2.</b> Send this reply code back to your friend, then wait to connect:</p>'+
         '<textarea class="netcode" id="ansOut" readonly rows="3">'+esc(answer)+'</textarea>'+
         '<button class="btn primary" id="copyAns">📋 Copy reply code</button>'+
-        '<div class="netstat">Once they paste it and hit Connect, the game starts here automatically.</div>';
+        '<div class="netstat" id="joinStat">Once they paste it and hit Connect, the game starts here automatically.</div>';
       s2.querySelector('#copyAns').addEventListener('click',()=>copyText(answer,s2.querySelector('#ansOut')));
+      armLiveWatch('joinStat');
     }catch(e){ s2.innerHTML='<p class="netp">That invite didn\'t parse — make sure you pasted the whole thing.</p>'; }
   });
   if(prefill){ b.querySelector('#doJoin').click(); }
@@ -1283,6 +1290,16 @@ function loop(){
 }
 
 /* ============ live P2P (real-time over WebRTC) ============ */
+let liveWatch=null;
+function armLiveWatch(elId){
+  clearTimeout(liveWatch);
+  liveWatch=setTimeout(()=>{ if(!live.connected) liveFallbackMsg(elId); }, 20000);
+}
+function liveFallbackMsg(elId){
+  const msg='Couldn\'t connect directly — your networks may be blocking peer-to-peer. Regenerate fresh codes and retry, or use “Turn-by-turn link” from the menu, which always works.';
+  const el=elId&&document.getElementById(elId);
+  if(el) el.textContent=msg; else setStatus('<b>'+msg+'</b>');
+}
 function inputLocked(){
   if(live.on) return !live.connected || player!==myId;
   if(online) return player!==myId;
@@ -1336,6 +1353,7 @@ function handleNetMsg(m){
   if(m.t==='hello'){ return; }
 }
 function liveOnConnect(role){
+  clearTimeout(liveWatch);
   live.on=true; live.role=role; live.connected=true; live.waiting=false;
   myId = role==='host' ? 1 : 2;
   online=false; // live supersedes link mode
@@ -1367,6 +1385,10 @@ function newPC(){
   const pc=new RTCPeerConnection({iceServers:[
     {urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']}
   ]});
+  pc.addEventListener('iceconnectionstatechange',()=>{
+    if((pc.iceConnectionState==='failed'||pc.iceConnectionState==='closed') && !live.connected)
+      liveFallbackMsg(document.getElementById('netStat')?'netStat':'joinStat');
+  });
   live.pc=pc; return pc;
 }
 function iceComplete(pc){
@@ -1451,8 +1473,9 @@ rack();
 sizeCanvas();
 (function detectInvite(){
   try{
-    const h=(typeof location!=='undefined'&&location.hash)||'';
-    if(/[#?&]live=/.test(h)){ panelJoin(h.match(/live=([A-Za-z0-9\-_]+)/)[1]); return; }
+    const h=((typeof location!=='undefined'&&location.hash)||'')+' '+((typeof location!=='undefined'&&location.search)||'');
+    const m=h.match(/live=([A-Za-z0-9\-_]+)/);
+    if(m){ panelJoin(m[1]); return; }
   }catch(e){}
   if(!loadFromHash()){
     setStatus("<b>Player 1 breaks.</b> Drag the cue ball anywhere behind the head string, then confirm. Tap <b>Play a friend</b> to play someone on another device — live or by link.");
